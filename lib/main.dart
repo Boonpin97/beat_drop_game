@@ -1,29 +1,40 @@
+import 'package:beatdrop_shared/beatdrop_shared.dart';
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
-import 'screens/game_screen.dart';
+import 'platform/platform.dart';
+import 'screens/landing_screen.dart';
+import 'theme.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
-  await SystemChrome.setPreferredOrientations([DeviceOrientation.portraitUp]);
-  await SystemChrome.setEnabledSystemUIMode(SystemUiMode.immersiveSticky);
-  runApp(const RhythmApp());
+  if (!kIsWeb) {
+    await SystemChrome.setPreferredOrientations([DeviceOrientation.portraitUp]);
+    await SystemChrome.setEnabledSystemUIMode(SystemUiMode.immersiveSticky);
+  }
+  runApp(RhythmApp(inviteCode: _inviteCode(Uri.base)));
+}
+
+/// The room code in a shared `/r/<code>` link.
+String? _inviteCode(Uri uri) {
+  final s = uri.pathSegments;
+  return s.length == 2 && s[0] == 'r' ? normalizeRoomCode(s[1]) : null;
 }
 
 class RhythmApp extends StatelessWidget {
-  const RhythmApp({super.key});
+  RhythmApp({super.key, this.inviteCode});
+
+  final String? inviteCode;
+  final _sound = SoundEngine();
 
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
-      title: 'Mariah Carey Rhythm',
+      title: 'Challenge your sense',
       debugShowCheckedModeBanner: false,
-      theme: ThemeData(
-        brightness: Brightness.dark,
-        colorSchemeSeed: Colors.red,
-        scaffoldBackgroundColor: Colors.black,
-      ),
-      home: const GameScreen(),
+      theme: buildTheme(),
+      home: LandingScreen(sound: _sound, inviteCode: inviteCode),
     );
   }
 }

@@ -1,0 +1,7 @@
+# Only the room server and its shared package go to Cloud Build.
+/*
+!/Dockerfile
+!/packages/
+!/server/
+**/.dart_tool/
+**/build/

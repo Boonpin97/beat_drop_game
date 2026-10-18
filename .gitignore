@@ -43,3 +43,22 @@ app.*.map.json
 /android/app/debug
 /android/app/profile
 /android/app/release
+
+# Firebase
+.firebase/
+firebase-debug.log
+
+# Deployment target and credentials: kept local, never committed
+.firebaserc
+.env
+.env.*
+*.jks
+*.keystore
+key.properties
+google-services.json
+GoogleService-Info.plist
+firebase_options.dart
+*service-account*.json
+
+# Copyrighted song clip: bring your own (see README)
+assets/audio/song.mp3

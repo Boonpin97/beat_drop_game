@@ -1,14 +1,18 @@
-import 'dart:async';
-
-import 'package:audioplayers/audioplayers.dart';
+import 'package:beatdrop_shared/beatdrop_shared.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/scheduler.dart';
 
 import '../game_config.dart';
+import '../platform/platform.dart';
+import '../theme.dart';
+import '../widgets/drum_pad.dart';
 import '../widgets/start_view.dart';
 
+/// Single-player practice round.
 class GameScreen extends StatefulWidget {
-  const GameScreen({super.key});
+  const GameScreen({super.key, required this.sound});
+
+  final SoundEngine sound;
 
   @override
   State<GameScreen> createState() => _GameScreenState();
@@ -16,17 +20,10 @@ class GameScreen extends StatefulWidget {
 
 class _GameScreenState extends State<GameScreen>
     with SingleTickerProviderStateMixin {
-  final _song = AudioPlayer();
-  AudioPool? _tumPool;
-  StreamSubscription<PlayerState>? _stateSub;
-  StreamSubscription<void>? _completeSub;
-
-  /// Runs while the song is audibly playing; its elapsed time is "song time".
-  final _songClock = Stopwatch();
   late final Ticker _ticker;
 
-  /// Completes once the song and drum sound are loaded.
-  late final Future<void> _ready;
+  /// Local time the song is heard from; null until scheduled.
+  int? _songStart;
 
   /// False while the Play button is showing.
   bool _started = false;
@@ -41,48 +38,42 @@ class _GameScreenState extends State<GameScreen>
   /// The song ended without any scoring tap.
   bool _missed = false;
 
-  bool _pressed = false;
+  SoundEngine get _sound => widget.sound;
+
+  /// Position in the song; null while it isn't audibly playing.
+  Duration? get _songTime {
+    final start = _songStart;
+    if (start == null) return null;
+    final us = perfNowMicros() - start;
+    return us < 0 ? null : Duration(microseconds: us);
+  }
 
   @override
   void initState() {
     super.initState();
     _ticker = createTicker(_onTick)..start();
-    _stateSub = _song.onPlayerStateChanged.listen((state) {
-      if (state == PlayerState.playing && !_songClock.isRunning) {
-        _songClock.start();
-      }
-    });
-    _completeSub = _song.onPlayerComplete.listen((_) {
-      if (mounted && _result == null) setState(() => _missed = true);
-    });
-    _ready = _init();
-  }
-
-  Future<void> _init() async {
-    _tumPool = await AudioPool.create(
-      source: AssetSource(GameConfig.tumAsset),
-      minPlayers: 3,
-      maxPlayers: 8,
-      playerMode: PlayerMode.lowLatency,
-      // Without this the drum would steal audio focus and pause the song.
-      audioContext: AudioContext(
-        android: const AudioContextAndroid(audioFocus: AndroidAudioFocus.none),
-      ),
-    );
-    // Keep the song loaded after stop() so every round can start instantly.
-    await _song.setReleaseMode(ReleaseMode.stop);
-    await _song.setSource(AssetSource(GameConfig.songAsset));
+    _sound.load();
   }
 
   Future<void> _start() async {
+    _sound.unlock();
     setState(() => _started = true);
-    await _ready;
-    if (mounted && _started) await _song.resume();
+    await _playSong();
+  }
+
+  Future<void> _playSong() async {
+    await _sound.load();
+    if (!mounted || !_started) return;
+    final start = await _sound.scheduleSong(perfNowMicros() + 100000);
+    if (mounted && _started) _songStart = start;
   }
 
   void _onTick(Duration _) {
-    if (!_songClock.isRunning || _result != null || _missed) return;
-    if (!_dropPassed && _songClock.elapsed >= GameConfig.dropTime) {
+    final now = _songTime;
+    if (now == null || _result != null || _missed) return;
+    if (now >= (_sound.songDuration ?? const Duration(minutes: 5))) {
+      setState(() => _missed = true);
+    } else if (!_dropPassed && now >= GameConfig.dropTime) {
       setState(() {
         _dropPassed = true;
         if (_firstTap != null) {
@@ -95,15 +86,13 @@ class _GameScreenState extends State<GameScreen>
     }
   }
 
-  void _onTap() {
-    _tumPool?.start();
-    setState(() => _pressed = true);
-    Future.delayed(const Duration(milliseconds: 80), () {
-      if (mounted) setState(() => _pressed = false);
-    });
-
-    if (!_songClock.isRunning || _result != null || _missed) return;
-    final now = _songClock.elapsed;
+  void _onTap(Duration timeStamp) {
+    _sound.playTum();
+    final start = _songStart;
+    if (start == null || _result != null || _missed) return;
+    final us = tapTimeMicros(timeStamp) - start;
+    if (us < 0) return;
+    final now = Duration(microseconds: us);
     if (!_dropPassed) {
       _firstTap ??= now;
     } else if (_firstTap == null) {
@@ -113,9 +102,7 @@ class _GameScreenState extends State<GameScreen>
   }
 
   void _resetRound() {
-    _songClock
-      ..stop()
-      ..reset();
+    _songStart = null;
     _firstTap = null;
     _dropPassed = false;
     _result = null;
@@ -124,38 +111,24 @@ class _GameScreenState extends State<GameScreen>
   }
 
   Future<void> _restart() async {
-    await _song.stop();
+    _sound.stopSong();
     setState(_resetRound);
-    await _song.resume();
+    await _playSong();
   }
 
-  Future<void> _backToStart() async {
+  void _backToStart() {
+    _sound.stopSong();
     setState(() {
       _resetRound();
       _started = false;
     });
-    await _song.stop();
   }
 
   @override
   void dispose() {
     _ticker.dispose();
-    _stateSub?.cancel();
-    _completeSub?.cancel();
-    _song.dispose();
-    _tumPool?.dispose();
+    _sound.stopSong();
     super.dispose();
-  }
-
-  static String _format(Duration d) =>
-      (d.inMicroseconds / Duration.microsecondsPerSecond).toStringAsFixed(3);
-
-  static String _rating(Duration d) {
-    final ms = d.inMilliseconds.abs();
-    if (ms < 50) return 'PERFECT!';
-    if (ms < 150) return 'Great';
-    if (ms < 400) return 'Good';
-    return 'Off beat';
   }
 
   @override
@@ -167,8 +140,7 @@ class _GameScreenState extends State<GameScreen>
         if (!didPop) _backToStart();
       },
       child: Scaffold(
-        // Matches the drum image's white background.
-        backgroundColor: Colors.white,
+        backgroundColor: AppColors.cream,
         body: AnimatedSwitcher(
           duration: const Duration(milliseconds: 300),
           child: _started
@@ -180,18 +152,19 @@ class _GameScreenState extends State<GameScreen>
   }
 
   Widget _buildGame() {
+    final now = _songTime ?? Duration.zero;
     final String readout;
     var lateColor = false;
     if (_result != null) {
-      readout = '${_late ? '+' : ''}${_format(_result!)}';
+      readout = '${_late ? '+' : ''}${formatSeconds(_result!)}';
       lateColor = _late;
     } else if (_firstTap != null) {
-      readout = _format(_songClock.elapsed - _firstTap!);
+      readout = formatSeconds(now - _firstTap!);
     } else if (_missed) {
       readout = '';
     } else if (_dropPassed) {
       // No tap yet: count how late the player is.
-      readout = '+${_format(_songClock.elapsed - GameConfig.dropTime)}';
+      readout = '+${formatSeconds(now - GameConfig.dropTime)}';
       lateColor = true;
     } else {
       readout = 'Tap the drum!';
@@ -201,14 +174,9 @@ class _GameScreenState extends State<GameScreen>
       key: const ValueKey('game'),
       fit: StackFit.expand,
       children: [
-        GestureDetector(
-          behavior: HitTestBehavior.opaque,
-          onTapDown: (_) => _onTap(),
-          child: AnimatedScale(
-            scale: _pressed ? 0.92 : 1.0,
-            duration: const Duration(milliseconds: 80),
-            child: Image.asset(GameConfig.drumImageAsset, fit: BoxFit.contain),
-          ),
+        Padding(
+          padding: const EdgeInsets.fromLTRB(24, 120, 24, 48),
+          child: DrumPad(onHit: _onTap),
         ),
         SafeArea(
           child: Align(
@@ -235,9 +203,13 @@ class _GameScreenState extends State<GameScreen>
   }
 
   Widget _buildResult() {
-    final theme = Theme.of(context);
+    // Light text on the dimmed drum.
+    final theme = ThemeData(
+      brightness: Brightness.dark,
+      colorSchemeSeed: AppColors.red,
+    );
     return ColoredBox(
-      color: Colors.black54,
+      color: Colors.black87,
       child: Center(
         child: Column(
           mainAxisSize: MainAxisSize.min,
@@ -250,10 +222,10 @@ class _GameScreenState extends State<GameScreen>
                 style: theme.textTheme.headlineSmall,
               ),
             ] else ...[
-              Text(_rating(_result!), style: theme.textTheme.displayMedium),
+              Text(rating(_result!), style: theme.textTheme.displayMedium),
               const SizedBox(height: 12),
               Text(
-                '${_late ? '+' : ''}${_format(_result!)} s',
+                '${_late ? '+' : ''}${formatSeconds(_result!)} s',
                 style: theme.textTheme.displayLarge?.copyWith(
                   fontWeight: FontWeight.bold,
                   color: _late ? Colors.redAccent : null,
